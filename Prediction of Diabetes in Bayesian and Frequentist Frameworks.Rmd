@@ -1,0 +1,263 @@
+---
+title: "Untitled"
+author: "Jacob Haywood"
+date: "4/6/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=FALSE}
+install.packages("faraway",repos = "http://cran.us.r-project.org")
+library(faraway)
+library(coda)
+library(rjags)
+summary(pima)
+plot(pima)
+```
+
+
+```{r}
+pima_data <- pima
+pima_data$insulin[pima_data$insulin == 0] <- NA
+pima_data <- pima_data[!is.na(pima_data$insulin),]
+summary(pima_data)
+```
+
+
+
+
+```{r}
+install.packages("corrplot",repos = "http://cran.us.r-project.org")
+library(corrplot)
+corrplot(cor(pima_data))
+```
+
+```{r}
+fm = glm(test~pregnant+glucose+diastolic+triceps+insulin+bmi+age+diabetes,data=pima_data,family='binomial')
+summary(fm) #AIC: 362.14
+```
+
+
+```{r}
+fm1 = glm(test~pregnant+glucose+triceps+insulin+bmi+age+diabetes,data=pima_data,family='binomial')
+summary(fm1) #removed diastolic, AIC: 360.16
+```
+
+
+```{r}
+fm2 = glm(test~pregnant+glucose+triceps+bmi+age+diabetes,data=pima_data,family='binomial')
+summary(fm2) #removed insulin, AIC: 358.55
+```
+
+
+```{r}
+fm3 = glm(test~pregnant+glucose+bmi+age+diabetes,data=pima_data,family='binomial')
+summary(fm3) #removed tricep, AIC: 356.99
+```
+
+
+```{r}
+fm4 = glm(test~glucose+bmi+age+diabetes,data=pima_data,family='binomial')
+summary(fm4) #removed pregnant, AIC: 357.35
+```
+
+
+```{r}
+plot(fm3)
+```
+
+
+
+
+```{r}
+logP=function(y,X,b,b0,varB){
+  Xb=X%*%b
+  theta=exp(Xb)/(1+exp(Xb))
+  logLik=sum( dbinom(x=y,p=theta,size=1,log=T)  )
+  logPrior=sum(  dnorm(x=b,sd=sqrt(varB),mean=b0,log=T))
+  return(logLik+logPrior)
+}
+
+
+logisticRegressionBayes=function(y,X,nIter=100000,V=.02,varB=rep(10000,ncol(X)),b0=rep(0,ncol(X))){
+  
+  ####### Arguments #######################
+  # y  a vector with 0/1 values
+  # X  incidence matrix of effects
+  # b0,varB, the prior mean and prior variance bj~N(b0[j],varB[j])
+  # V the variance of the normal distribution used to generate candidates~N(b[i-1],V)
+  # nIter: number of iterations of the sampler
+  # Details: generates samples from the posterior distribution of a logistic regression using a Metropolis algorithm
+  #########################################
+  
+  # A matrix to store samples
+  p=ncol(X)
+  B=matrix(nrow=nIter,ncol=p)
+  colnames(B)=colnames(X)
+  
+  # A vector to trace acceptance
+  accept=matrix(nrow=nIter,ncol=p,NA)
+  accept[1,]=TRUE 
+  
+  # Initialize
+  B[1,]=0
+  B[1,1]=log(mean(y)/(1-mean(y)))
+  b=B[1,]
+  for(i in 2:nIter){
+    
+    for(j in 1:p){
+      candidate=b
+      candidate[j]=rnorm(mean=b[j],sd=sqrt(V),n=1)
+      
+      logP_current=logP(y,X,b0=b0,varB=varB,b=b)
+      logP_candidate=logP(y,X,b0=b0,varB=varB,b=candidate)
+      r=min(1,exp(logP_candidate-logP_current))
+      delta=rbinom(n=1,size=1,p=r)
+      
+      accept[i,j]=delta
+      
+      if(delta==1){ b[j]=candidate[j] }
+    }
+    B[i,]=b
+    if(i%%1000==0){
+      message(" Iteration ",i)
+    }
+    
+  }
+  
+  return(list(B=B,accept=accept))
+}
+```
+
+```{r}
+Z = as.matrix(model.matrix(~pregnant+glucose+bmi+age+diabetes,data=pima_data))
+samples=logisticRegressionBayes(y=pima_data$test,X=cbind(Z),nIter=50000)
+cbind(fm3$coef,colMeans(samples$B[-(1:10000),]))
+samples1 <- samples$B
+samples1 <- as.mcmc(samples1)
+summary(samples1)
+```
+
+
+```{r}
+model <- glm(test~pregnant+glucose+bmi+age+diabetes,data=pima_data,family='binomial')
+
+v.01  = logisticRegressionBayes(y=pima_data$test,X=cbind(Z),V=.01, nIter=50000)
+cbind(model$coef,colMeans(v.01$B[-(1:4000),]))
+mean(v.01$accept)
+v.01samp<- v.01$B
+v.01samp<- as.ts(v.01samp)
+v.01samp<- as.mcmc(v.01samp)
+autocorr(v.01samp,lags=50,relative=TRUE)
+effectiveSize(v.01samp)
+
+v.001 = logisticRegressionBayes(y=pima_data$test,X=cbind(Z),V=.001, nIter=50000)
+cbind(model$coef,colMeans(v.001$B[-(1:4000),]))
+mean(v.001$accept)
+v.001samp<- v.001$B
+v.001samp<- as.ts(v.001samp)
+v.001samp<- as.mcmc(v.001samp)
+autocorr(v.001samp,lags=50,relative=TRUE)
+effectiveSize(v.001samp)
+
+v.0001 = logisticRegressionBayes(y=pima_data$test,X=cbind(Z),V=.0001, nIter=50000)
+cbind(model$coef,colMeans(v.0001$B[-(1:4000),]))
+mean(v.0001$accept)
+v.0001samp<- v.0001$B
+v.0001samp<- as.ts(v.0001samp)
+v.0001samp<- as.mcmc(v.0001samp)
+autocorr(v.0001samp,lags=50,relative=TRUE)
+effectiveSize(v.0001samp)
+
+
+
+```
+
+```{r}
+
+burnIn <- 1:5000
+
+#pregnant
+b1 <- as.ts(samples1[,2])
+b1_samp <- as.mcmc(b1)
+autocorr(b1_samp,lags=50,relative=TRUE)
+plot(as.vector(b1_samp),type='o',col=2)
+
+b1_samp2 <- b1_samp[-burnIn]
+plot(as.vector(b1_samp2),type='o',col=2)
+b1_samp2 <- as.mcmc(b1_samp2)
+summary(b1_samp2)
+effectiveSize(b1_samp2)
+
+#glucose
+b2 <- as.ts(samples1[,3])
+b2_samp <- as.mcmc(b2)
+autocorr(b2_samp,lags=50,relative=TRUE)
+plot(as.vector(b2_samp),type='o',col=3)
+
+b2_samp2 <- b2_samp[-burnIn]
+plot(as.vector(b2_samp2),type='o',col=3)
+b2_samp2 <- as.mcmc(b2_samp2)
+summary(b2_samp2)
+effectiveSize(b2_samp2)
+
+#bmi
+b3 <- as.ts(samples1[,4])
+b3_samp <- as.mcmc(b3)
+autocorr(b3_samp,lags=50,relative=TRUE)
+plot(as.vector(b3_samp),type='o',col=4)
+
+b3_samp2 <- b3_samp[-burnIn]
+plot(as.vector(b3_samp2),type='o',col=4)
+b1_samp3 <- as.mcmc(b3_samp2)
+summary(b3_samp2)
+effectiveSize(b3_samp2)
+
+#age
+b4 <- as.ts(samples1[,5])
+b4_samp <- as.mcmc(b4)
+autocorr(b4_samp,lags=50,relative=TRUE)
+plot(as.vector(b4_samp),type='o',col=5)
+
+b4_samp2 <- b4_samp[-burnIn]
+plot(as.vector(b4_samp2),type='o',col=5)
+b1_samp4 <- as.mcmc(b4_samp2)
+summary(b4_samp2)
+effectiveSize(b4_samp2)
+
+#diabetes
+b5 <- as.ts(samples1[,6])
+b5_samp <- as.mcmc(b5)
+autocorr(b5_samp,lags=50,relative=TRUE)
+plot(as.vector(b5_samp),type='o',col=6)
+
+b5_samp2 <- b5_samp[-burnIn]
+plot(as.vector(b5_samp2),type='o',col=6)
+b5_samp3 <- as.mcmc(b5_samp2)
+summary(b5_samp2)
+effectiveSize(b5_samp2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
