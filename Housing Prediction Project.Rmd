@@ -1,0 +1,750 @@
+---
+title: "STT_481_Final"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+rm(list = ls())
+library(dplyr)
+library(FNN)
+library(class)
+library(MASS)
+library(leaps)
+library(glmnet)
+library(gam)
+library(tree)
+library(randomForest)
+library(gbm)
+```
+
+
+```{r}
+train <- read.csv("C:/Users/jacob/Downloads/train_new.csv")
+test <- read.csv("C:/Users/jacob/Downloads/test_new.csv")
+```
+
+```{r}
+train_x <- train %>% dplyr::select(-SalePrice)
+train_y <- train %>% dplyr::select(SalePrice)
+test_x <- test %>% dplyr::select(-SalePrice)
+test_y <- test %>% dplyr::select(SalePrice)
+```
+
+
+This data is from Ames Housing dataset compiled by Dean De Cock. The data includes variables. The variables and their descriptions are below:
+
+LotArea - Lot size in square feet
+OverallQual - Overall material and finish quality
+OverallCond - Overall condition rating
+YearBuilt - Original construction date
+YearRemodAdd - Remodel date
+BsmtFinSF1 - Type 1 finished square feet
+BsmtFinSF2 - Type 2 finished square feet
+BsmtUnfSF - Unfinished square feet of basement area
+X1stFlrSF - First floor square feet
+X2ndFlrSF - Second floor square feet
+LowQualFinSF - Low quality finished square feet (all floors)
+BsmtFullBath - Basement full bathrooms
+BsmtHalfBath - Basement half bathrooms
+FullBath - Full bathrooms above grade
+HalfBath - Half baths above grade
+BedroomAbvGr - Number of bedrooms above basement level
+TotRmsAbvGrd - Total rooms above grade (does not include bathrooms)
+Fireplaces - Number of fireplaces
+GarageCars - Size of garage in car capacity
+KitchenAbvGr - Number of kitchens
+TotRmsAbvGrd - Total rooms above grade (does not include bathrooms)
+Fireplaces - Number of fireplaces
+GarageCars - Size of garage in car capacity
+WoodDeckSF - Wood deck area in square feet
+MoSold - Month Sold
+
+BsmtHalfBath, BsmtFullBath, FullBath, KitchenAbvGr, Fireplaces, and HalfBath are treated as qualitative variables instead of quantitative due to their low variety in unique values.
+
+The problem that we are trying to uncover is how we can accurately predict the sale price of a house based on the given data. To explore this, we will use many different techniques: KNN, linear regression, subset linear regression, ridge regression, lasso regression, GAM, regression tree, bagging, random forest, and boosting models.
+
+The data was pre-cleaned, dropping the NA values and the skewed variables. 
+
+
+
+KNN
+
+
+```{r}
+K.vt <-c(1,5,10,15,20,25,30,35,40,45,50)
+error.k <-rep(0,length(K.vt))
+counter <- 0
+for(k in K.vt){
+  counter <- counter+1
+  error <- 0
+  for(i in 1:nrow(train_x)){
+    pred.class <- knn.reg(train_x[-i,], train_x[i,], train_y$SalePrice[-i], k=k)
+    error <- error+ (train_y$SalePrice[i]-pred.class$pred)^2
+  }
+error.k[counter] <- error/nrow(train_x)
+}
+print(error.k)
+```
+
+We run a cross validation algorithm to find the best K for our model. We see here that K=5 has the lowest MSE. This means that this is the best K. 
+
+```{r}
+head(knn.reg(train=train_x,test=test_x,y=train_y,k=5)$pred)
+```
+
+These are our final predictions from our final model with our optimized k value of 5.
+
+
+
+
+
+
+
+Linear Regression
+
+```{r}
+linfit <- lm(train_y$SalePrice~.,data=train_x)
+plot(linfit)
+```
+
+Next we run a linear regression algorithm. This algorithm utilizes the least squares method, meaning it draws a linear line through the data at which the residual sum of squares is minimized. 
+
+We see that the residuals are not normally distributed and are not linear due to some large presumed outliers. We also have one data point (1200) that falls outside of our Cook's distance of 1, meaning this point is a high leverage point. 
+
+For our outliers and our high leverage point, there is no obvious remedy as we do not have enough information to remove these from our model. To remove these, we would need evidence that it was a data collection error. 
+
+For our nonlinearity and normality issues, we can transform our Y variable to see if it improves our residuals. We can run a boxcox on our model to identify the correct strategy.
+
+
+```{r}
+boxcox(SalePrice~.,data=train)
+```
+
+With a lambda of 0, it shows our best transformation would by log(Y).
+
+```{r}
+fit2 <- lm(log(train_y$SalePrice)~.,data=train_x)
+plot(fit2)
+```
+
+With this transformation, our model has more linearity in the residuals, and our normality improved at higher values. Unfortunately, the normality issue remains for lower values.
+
+```{r}
+summary(fit2)
+```
+Of our significant variables, we see that our most significant include OverallQual, OverallCond, and YearBuilt with an approximately 0 p-value. Our coefficients for these variables can tell us how each variable affects our response term. For example, if YearBuilt incremented by 1 (meaning it was newer by 1 year), we would see a change in Y of .002571, assuming all other variables remained constant. This makes sense, because people generally pay more for newer houses. This same logic can be applied to all our significant variables. 
+
+
+```{r}
+head(exp(predict(fit2,newdata=test)))
+```
+
+These are our new predictions. We run the exp() function because our fitted values from our model are log transformed. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Subset Selection
+
+This algorithm is similar to the linear regression method, but it narrows down the full model to choose only the most significant variables. This leads to a model that is simplified and minimizes the Cp value. 
+
+I will choose the backward stepwise subset selection. I chose this method in particular through a process of elimation. With 24 predictors, this means there can be a list of 2^24 different possible combinations of predictors if I chose a "best subset" method. This may be too computationally expensive for practical use. The other two methods, forward and backward, may not guarantee to give us the best model, but it will lower the chance of overfitting and remain computationally inexpensive. 
+
+```{r}
+cor(train_x) >=.7
+```
+
+We see that the variables are not highly correlated, so we should receive relatively the same model from both methods. So I went with backwards selection.
+
+I will be using the Cp, or AIC, value. This is because the Cp value will help find a model that explains the observed variation in their data without a high risk of overfitting.
+
+
+```{r}
+backward.subset <- regsubsets(log(SalePrice)~.,data=train,nvmax=23,method='backward')
+backward.subset.summary <- summary(backward.subset)
+backward.subset.summary
+```
+
+These is our subset selection algorithm function.
+
+
+```{r}
+plot(backward.subset.summary$cp,type='b',ylab='cp')
+which.min(backward.subset.summary$cp)
+points(18,backward.subset.summary$cp[18],col='red',cex=2,pch=20)
+```
+
+We see that the Cp minimizes at 18 parameters.
+
+```{r}
+backward.subset.summary$which
+```
+For 18 parameters, the ones that were dropped were LowQualFinSF, BsmtHalfBath, BedroomAbvGround, GarageArea, and MoSold. 
+
+
+```{r}
+coef(backward.subset,18)
+```
+Here we see our final selection of variables that we will be using. It is important to know that we still have a log transformed Y response term. The interpretation of these coefficients would be different from a traditional linear model. For example, the interpretation of the FullBath variable would be for each increment of 1 in FullBath, the price of the home would increase by exp(0.03669-1)*100 = 3.7 percent. 
+
+Of our variables, we see that these variables make sense, such as how the price of the home increases as the Lot Area, Overall Quality, and the number of Full Bathrooms increases. 
+
+
+```{r}
+predict.regsubsets <-function(object, newdata , id, ...){
+  form <- as.formula(object$call[[2]])
+  mat <-model.matrix(form, newdata)
+  coefi <-coef(object, id = id)
+  xvars <-names(coefi)
+  return(mat[,xvars]%*%coefi)
+}
+
+subset.lindata <- predict.regsubsets(backward.subset,newdata=test,id=which.min(backward.subset.summary$cp))
+head(exp(subset.lindata))
+
+
+```
+
+
+
+
+
+Shrinkage Methods
+
+```{r}
+X <- model.matrix(log(train_y$SalePrice)~.,data=train_x)[,-1]
+y <- train$SalePrice
+grid <- 10^seq(10,-2,length=1000)
+
+
+ridge.mod <- glmnet(X,y,alpha=0,lambda=grid)
+cv.out <- cv.glmnet(X,y,alpha=0,nfolds=10)
+plot(cv.out)
+bestlam <- cv.out$lambda.min
+coef(ridge.mod,s=bestlam)
+
+testx <- model.matrix(log(SalePrice)~.,test)[,-1]
+ridge.pred <- predict(ridge.mod,s=bestlam,newx=testx)
+
+head(ridge.pred)
+```
+
+
+
+
+```{r}
+lasso.mod <- glmnet(X,y,alpha=1,lambda=grid)
+cv.out2 <- cv.glmnet(X,y,alpha=1)
+plot(cv.out)
+
+bestlam2 <- cv.out2$lambda.min
+coef(lasso.mod, s=bestlam2)
+
+lasso.pred <- predict(lasso.mod, s=bestlam2, newx = testx)
+head(lasso.pred)
+```
+
+Next, we run a ridge and lasso regression. These two methods are called shrinkage regression methods because they utilize shrinking, which is when the coefficient estimates are shrunk down towards 0. The difference between ridge and lasso are that lasso utilizes a regularization term in absolute value. Lasso also sets irrelevant variables to 0. 
+
+We used cross validation to determine the best tuning parameters for both models. We utilized the cv.glmnet function that optimized lambda. The optimized lambda are saved as bestlam and bestlam2 for the ridge and lasso regression respectively.
+
+In general, the Lasso method is preferred in terms of model interpretation. This is because in Ridge Regression, there can be many coefficients that are not 0. This does not mean that Lasso always leads to a higher prediction accuracy though. We will still need a process of cross validation to determine which model will be more accurate to our data.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Generalized Additive Models
+
+```{r}
+gamfit <- gam(log(train_y$SalePrice)~s(LotArea) + s(OverallQual) + s(OverallCond) + s(YearBuilt) + s(YearRemodAdd) + s(BsmtFinSF1) + s(BsmtFinSF2) + s(BsmtUnfSF) + s(X1stFlrSF) + s(X2ndFlrSF) + s(LowQualFinSF) + BsmtFullBath + BsmtHalfBath + FullBath + HalfBath + s(BedroomAbvGr) + KitchenAbvGr + s(TotRmsAbvGrd) + Fireplaces + s(GarageCars) + s(GarageArea) + s(WoodDeckSF) + s(MoSold),data=train_x)
+
+
+plot(gamfit)
+summary(gamfit)
+```
+
+
+Note: BsmtHalfBath, BsmtFullBath, FullBath, KitchenAbvGr, Fireplaces, and HalfBath were not splined due to their low number of unique variables. This may imply we treat them as qualitative variables instead of quantitative.
+
+Our GAM model utilizes smoothing splines and local regression on our quantitative predictors. 
+
+This is our model for the default df, 4. We see in the summary of the model that some variables are linearly significant, some are nonlinearly significant, and some are both or neither. For example, we see that GarageArea is not significant in a linear setting but is significant in a nonlinear setting.
+
+We will try different values for the df to see if we can get better results.
+
+```{r}
+error = 0
+for(i in 1:nrow(train_x)){
+  gamfit <- gam(log(train_y$SalePrice[-i])~s(LotArea) + s(OverallQual) + s(OverallCond) + s(YearBuilt) + s(YearRemodAdd) + s(BsmtFinSF1) + s(BsmtFinSF2) + s(BsmtUnfSF) + s(X1stFlrSF) + s(X2ndFlrSF) + s(LowQualFinSF) + BsmtFullBath + BsmtHalfBath + FullBath + HalfBath + s(BedroomAbvGr) + KitchenAbvGr + s(TotRmsAbvGrd) + Fireplaces + s(GarageCars) + s(GarageArea) + s(WoodDeckSF) + s(MoSold),data=train_x[-i,])
+  
+  pred <- predict(gamfit,train_x[i,])
+  error <- error + (log(train_y$SalePrice[i])-pred)^2
+}
+sqrt(error/nrow(train_x))
+
+
+
+error = 0
+for(i in 1:nrow(train_x)){
+  gamfit <- gam(log(train_y$SalePrice[-i])~s(LotArea,df=5) + s(OverallQual,df=5) + s(OverallCond,df=5) + s(YearBuilt,df=5) + s(YearRemodAdd,df=5) + s(BsmtFinSF1,df=5) + s(BsmtFinSF2,df=5) + s(BsmtUnfSF,df=5) + s(X1stFlrSF,df=5) + s(X2ndFlrSF,df=5) + s(LowQualFinSF,df=5) + BsmtFullBath + BsmtHalfBath + FullBath + HalfBath + s(BedroomAbvGr,df=5) + KitchenAbvGr + s(TotRmsAbvGrd,df=5) + Fireplaces + s(GarageCars,df=5) + s(GarageArea,df=5) + s(WoodDeckSF,df=5) + s(MoSold,df=5),data=train_x[-i,])
+  
+  pred <- predict(gamfit,train_x[i,])
+  error <- error + (log(train_y$SalePrice[i])-pred)^2
+}
+sqrt(error/nrow(train_x))
+
+error = 0
+for(i in 1:nrow(train_x)){
+  gamfit <- gam(log(train_y$SalePrice[-i])~s(LotArea,df=10) + s(OverallQual,df=10) + s(OverallCond,df=10) + s(YearBuilt,df=10) + s(YearRemodAdd,df=10) + s(BsmtFinSF1,df=10) + s(BsmtFinSF2,df=10) + s(BsmtUnfSF,df=10) + s(X1stFlrSF,df=10) + s(X2ndFlrSF,df=10) + s(LowQualFinSF,df=10) + BsmtFullBath + BsmtHalfBath + FullBath + HalfBath + s(BedroomAbvGr,df=10) + KitchenAbvGr + s(TotRmsAbvGrd,df=10) + Fireplaces + s(GarageCars,df=10) + s(GarageArea,df=10) + s(WoodDeckSF,df=10) + s(MoSold,df=10),data=train_x[-i,])
+  
+  pred <- predict(gamfit,train_x[i,])
+  error <- error + (log(train_y$SalePrice[i])-pred)^2
+}
+sqrt(error/nrow(train_x))
+```
+
+We see the estimated test MSEs from df = 4 (0.184), df= 5 (0.190), and df=10(0.281). The lowest MSE came from df= 4. This will be the model we will use.
+
+
+
+```{r}
+gampreds <- exp(predict(gamfit, newdata=test_x))
+head(gampreds)
+```
+
+These are the first 6 values that our model predicts using the GAM fit. 
+
+
+
+
+
+
+
+
+
+Regression Trees
+
+```{r}
+set.seed(10)
+treefit <- tree(log(train_y$SalePrice)~.,data=train_x)
+summary(treefit)
+```
+
+In this case, we are using a regression tree as our model. A regression tree utilizes a decision tree to estimate the response variable SalePrice. We see that the training MSE is 0.04 and the number of terminal nodes is 11. This is our unpruned model because we have not yet pruned, or narrowed down, our model. 
+
+```{r}
+plot(treefit)
+text(treefit,pretty=0)
+```
+
+We have a visualization of the tree we are using. We have OverallQual as our top variable, which makes sense as the quality of a home intuitively should have a high impact on the sale price.
+
+
+To optimize the number of trees, we will utilize cross validation.
+
+```{r}
+treefitcv <- cv.tree(treefit)
+treefitcv
+```
+
+This cross validation function allows us to optimize our regression tree based on the estimated test MSE.
+
+```{r}
+plot(treefitcv)
+```
+
+The lowest cross-validated error corresponds to 11, which is the same as our original model. This means that cross-validation did not lead to the selection of a pruned tree. 
+
+
+
+```{r}
+treepreds <- exp(predict(treefit,newdata=test_x))
+head(treepreds)
+```
+
+These are the first 6 values of our predicted data.
+
+
+
+
+
+
+
+Bagging
+
+```{r}
+bagfit <- randomForest(log(train_y$SalePrice)~.,data=train_x,mtry=ncol(train_x)-1,importance=TRUE,ntree=1000)
+importance(bagfit)
+varImpPlot(bagfit)
+```
+
+We use a bagging model now to estimate our response variable SalePrice. A bagging model utilizes bootstrap aggregation. This means that it averages a set of bootstrapped decision trees. The advantage of the bagging model is that it leads to lower bias and variance.
+
+Here we use ncol(train_x)-1 as our parameter for the mtry value to indicate a bagging model. This is because m=p in a bagging model. We are also using ntree as 1000. We see from the plot that OverallQual has the most impact. This is consistent with our regression tree model results which also indicated that OverallQual had the highest impact on our model.
+
+
+```{r}
+bagpreds <- exp(predict(bagfit,newdata=test_x))
+head(bagpreds)
+```
+
+Here are the first 6 predictors for SalePrice using this model.
+
+
+
+
+
+Random Forest
+
+```{r}
+randomforestfit <- randomForest(log(train_y$SalePrice)~.,data=train_x,mtry=round(sqrt(ncol(train_x)-1)),importance=TRUE,ntree=1000)
+randomforestfit
+importance(randomforestfit)
+varImpPlot(randomforestfit)
+```
+
+Now we will use a random forest model to predict our response variable SalePrice. A random forest model is similar to the bagging model where trees are averaged, but random forest takes the average of the decorrelated bootstrapped trees. This tends to lead to a lower variance model. 
+
+We use round(sqrt(ncol(train_x)-1)) as our parameter for the mtry model to indicate that it is a random forest model. This is because m is approximately sqrt(p) for a random forest model. We see that the training MSE is 0.0204. We see that the most important variable is OverallQual. This is consistent with previous models.
+
+```{r}
+randomforestpreds <- exp(predict(randomforestfit,newdata=test_x))
+head(randomforestpreds)
+```
+
+These are the first 6 predictions of our response variable SalePrice using this model.
+
+
+
+
+Boosting
+
+```{r}
+boostfit <- gbm(log(train_y$SalePrice) ~ .,data=train_x,distribution="gaussian",n.trees=1000,shrinkage=0.1,cv.folds=10)
+summary(boostfit)
+boostfit
+which.min(boostfit$cv.error)
+```
+
+Now we use a boosting model to predict our response variable SalePrice. A boosting model utilizes trees once again, but it averages a bunch of nonbootstrapped trees. This method grows sequentially as opposed to the random forest and bagging models. 
+
+Here we see the distribution of influence of the variables. OverallQual again is the top variable.
+
+We use a cross validation method to find the best number of trees for our model. The result of the cross validation indicated that 920 was the best number of trees. 
+
+
+```{r}
+boostpreds <- exp(predict(boostfit,newdata=test_x,n.trees=920))
+head(boostpreds)
+```
+
+
+These are our first 6 predictions of SalePrice using this model.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Estimated Test Errors and True Test Errors
+
+
+Saving my data
+
+```{r}
+knndata <- knn.reg(train=train_x,test=test_x,y=train_y,k=5)
+knndata <- data.frame('Id' = c(1461:2919),'SalePrice'=knndata$pred)
+write.csv(knndata,'C:/Users/jacob/Documents/STT 481/knndata.csv')
+
+lindata <- exp(predict(fit2,newdata=test))
+lindata <- data.frame('ID' = c(1461:2919),'SalePrice'=lindata)
+write.csv(lindata,'C:/Users/jacob/Documents/STT 481/lindata.csv')
+
+subsetlindata <- exp(subset.lindata)
+subsetlindata <- data.frame('Id' = c(1461:2919),'SalePrice'=subsetlindata)
+write.csv(subsetlindata,'C:/Users/jacob/Documents/STT 481/subsetlindata.csv')
+
+ridgedata <- ridge.pred
+ridgedata <- data.frame('Id' = c(1461:2919),'SalePrice'=ridgedata)
+write.csv(ridgedata,'C:/Users/jacob/Documents/STT 481/ridgedata.csv')
+
+lassodata <- lasso.pred
+lassodata <- data.frame('Id' = c(1461:2919),'SalePrice'=lassodata)
+write.csv(lassodata,'C:/Users/jacob/Documents/STT 481/lassodata.csv')
+
+gamdata <- gampreds
+gamdata <- data.frame('ID' = c(1461:2919),'SalePrice'=gamdata)
+write.csv(gamdata,'C:/Users/jacob/Documents/STT 481/gamdata.csv')
+
+treedata <- treepreds
+treedata <- data.frame('ID' = c(1461:2919),'SalePrice'=treedata)
+write.csv(treedata,'C:/Users/jacob/Documents/STT 481/treedata.csv')
+
+bagdata <- bagpreds
+bagdata <- data.frame('ID' = c(1461:2919),'SalePrice'=bagdata)
+write.csv(bagdata,'C:/Users/jacob/Documents/STT 481/bagdata.csv')
+
+randomforestdata <- randomforestpreds
+randomforestdata <- data.frame('ID' = c(1461:2919),'SalePrice'=randomforestdata)
+write.csv(randomforestdata,'C:/Users/jacob/Documents/STT 481/randomforestdata.csv')
+
+boostdata <- boostpreds
+boostdata <- data.frame('ID' = c(1461:2919),'SalePrice'=boostdata)
+write.csv(boostdata,'c:/Users/jacob/Documents/STT 481/boostdata.csv')
+```
+
+```{r}
+#KNN MSE
+error = 0
+for(i in 1:nrow(train_x)){
+  set.seed(10)
+  pred.class <- knn.reg(train_x[-i,], train_x[i,], train_y$SalePrice[-i], k=5)
+  error <- error+ (log(train_y$SalePrice[i])-log(pred.class$pred))^2
+}
+sqrt(error/nrow(train_x))
+
+#Lin Reg MSE
+error = 0
+for(i in 1:nrow(train_x)){
+  fitmse <- lm(log(train_y$SalePrice[-i])~.,data=train_x[-i,])
+  pred <- predict(fitmse,train_x[i,],type='response')
+  error <- error + (log(train_y$SalePrice[i])-pred)^2
+}
+sqrt(error/nrow(train_x))
+
+#Subset
+error = 0
+for(i in 1:nrow(train_x)){
+  subsetfit <- lm(log(train_y$SalePrice[-i])~LotArea+OverallQual+OverallCond+YearBuilt+YearRemodAdd+BsmtFinSF1+BsmtFinSF2+BsmtUnfSF+X1stFlrSF+X2ndFlrSF+BsmtFullBath+FullBath+HalfBath+KitchenAbvGr+TotRmsAbvGrd+Fireplaces+GarageCars+WoodDeckSF,train_x[-i,])
+  pred <- predict(subsetfit,train_x[i,])
+  error <- error + (log(train_y$SalePrice[i])-pred)^2
+}
+sqrt(error/nrow(train_x))
+
+#Ridge
+error <- 0
+for(i in 1:nrow(train_x)){
+
+  Xs <- model.matrix(log(train_y$SalePrice[-i])~.,data=train_x[-i,])[,-1]
+  ys <- train_y$SalePrice[-i]
+  ridgemod <- glmnet(Xs,ys,alpha=0,lambda=grid)
+  
+  testx = as.matrix(train_x[i,])
+  pred <- predict(ridgemod,s=bestlam,newx=testx)
+  
+  if(pred > 0){ #filter out negative predictions
+      error <- error + (log(train_y$SalePrice[i])-log(pred))^2
+  }
+}
+sqrt(error/(nrow(train_x)-2))
+
+#Lasso
+error <- 0
+for(i in 1:nrow(train_x)){
+  set.seed(10)
+  Xs <- model.matrix(log(train_y$SalePrice[-i])~.,data=train_x[-i,])[,-1]
+  ys <- train_y$SalePrice[-i]
+  lassomod <- glmnet(Xs,ys,alpha=1,lambda=grid)
+  
+  testx = as.matrix(train_x[i,])
+  pred <- predict(lassomod,s=bestlam2,newx=testx)
+  
+  if(pred > 0){ #filter out negative predictions
+      error <- error + (log(train_y$SalePrice[i])-log(pred))^2
+  }
+}
+sqrt(error/(nrow(train_x)-2))
+
+#GAM
+error = 0
+for(i in 1:nrow(train_x)){
+  gamfit <- gam(log(train_y$SalePrice[-i])~s(LotArea) + s(OverallQual) + s(OverallCond) + s(YearBuilt) + s(YearRemodAdd) + s(BsmtFinSF1) + s(BsmtFinSF2) + s(BsmtUnfSF) + s(X1stFlrSF) + s(X2ndFlrSF) + s(LowQualFinSF) + BsmtFullBath + BsmtHalfBath + FullBath + HalfBath + s(BedroomAbvGr) + KitchenAbvGr + s(TotRmsAbvGrd) + Fireplaces + s(GarageCars) + s(GarageArea) + s(WoodDeckSF) + s(MoSold),data=train_x[-i,])
+  
+  pred <- predict(gamfit,train_x[i,])
+  error <- error + (log(train_y$SalePrice[i])-pred)^2
+}
+sqrt(error/nrow(train_x))
+ 
+#Regression Tree
+error = 0
+for (i in 1:nrow(train_x)){
+  set.seed(10)
+  treefit <- tree(log(train_y$SalePrice[-i]) ~ ., data=train_x[-i,])
+  
+  pred <- predict(treefit,train_x[i,])
+  error <- error + (log(train_y$SalePrice[i])-pred)^2
+}
+sqrt(error/nrow(train_x))
+
+#Bagging
+error = 0
+for (i in 1:nrow(train_x)){
+  set.seed(10)
+  bagfit <- randomForest(log(train_y$SalePrice[-i])~.,data=train_x[-i,],mtry=ncol(train_x)-1,importance=TRUE,ntree=100)
+  pred <- predict(bagfit,train_x[i,])
+  error <- error + (log(train_y$SalePrice[i])-pred)^2
+}
+sqrt(error/nrow(train_x))
+
+#Random Forest
+error = 0
+for (i in 1:nrow(train_x)){
+  set.seed(10)
+  randomforestfit <- randomForest(log(train_y$SalePrice[-i])~.,data=train_x[-i,],mtry=round(sqrt(ncol(train_x)-1)),importance=TRUE,ntree=100)
+  pred <- predict(randomforestfit,train_x[i,])
+  error <- error + (log(train_y$SalePrice[i])-pred)^2
+}
+sqrt(error/nrow(train_x))
+
+#Boosting
+error = 0
+for (i in 1:nrow(train_x)){
+  set.seed(10)
+  boostfit <- gbm(log(train_y$SalePrice[-i])~.,data=train_x[-i,],distribution="gaussian",n.trees=100,shrinkage=0.1)
+  pred <- predict(boostfit,train_x[i,])
+  error <- error + (log(train_y$SalePrice[i])-pred)^2
+}
+sqrt(error/nrow(train_x))
+
+
+```
+
+
+
+
+Based on the CV estimates of each model, I believe that the model that will return the lowest test MSe will be the GAM model. This model returned a 0.13 estimated test MSE, which is the lowest of all the methods. 
+
+
+
+
+```{r}
+MSEs <- data.frame("Method" = c("KNN","Linear Reg","Subset Linear Reg", "Ridge","Lasso","GAM","Regression Tree","Bagging","Random Forest","Boosting"),"MSE" = c(0.231,0.159,0.158,0.186, 0.264,0.130,0.222,0.146,0.144,0.156),"True MSE"=c(0.249,0.151,0.151,0.222,0.454,0.134,0.228,0.153,0.148,0.143))
+MSEs
+```
+
+Here, we calculated our Mean squared errors. We used the same method kaggle did, sqrt(log of observed-log of predicted)^2/n. Looking at these MSE, they are very similar to the results we received through kaggle, except for the lasso regression. This did not perform well in kaggle, but performed very well in our MSE Cross Validation algorithm.
+
+Of the true test MSEs, we find that GAM had the lowest. This is consistent with our initial prediction based on the estimate test MSEs. 
+
+
+
+
+
+Based on our true test MSEs from Kaggle, we can try to answer why each model performed the way that it did. We see that, with the exception of our inconsistent lasso result, KNN resulted in the worst test MSE. This may be due to how KNN is very sensitive to the quality and the scale of the data. This is the only method in which we did not include a logarithm scale on our response variable. 
+
+We can also speculate as to why the GAM was the best performing model. We know that GAM works better with many predictors, which is great for this model because we have over 20 predictors. We also know that it is more flexible than other predictive regression models such as linear regression. This is consistent with our results because GAM performed better than the linear regression model. 
+
+As for the other methods, one algorithm is not inherently better than all others. Each method has their own pros and cons, and even the best performing algorithms may have consequences in computation time and cost. Thus, with different data, we may see that a different method performed better. Also, because our training data was picked randomly, we may see different results with a different training data from the same overall dataset. 
+
+
+
+In conclusion, we ran 9 different algorithms: KNN, Linear Regression, Subsetted Linear Regression, Shrinkage (Ridge/Lasso), GAM, Regression Tree, Bagging, Random Forest, and Boosting. We used cross validation to optimize the parameters of each model and used those models to predict the sale price of houses. The test MSE was estimated using LOOCV for all the methods and then the test MSE was actually calculated through Kaggle. The best performing method for both the LOOCV and Kaggle was GAM. This may be due to GAM's flexibility over other models. 
+
+This process raises further questions on the data that can be later explored as well. For example, it is assumed that with better cleaning of the data, we can reach better test MSE values. Instead of extracting NA values, we could estimate the NA values using a median/mean. This may produce better results.
+
+Another question that could be explored is how the results of these algorithms compare to a similar data set but for a different state. It is known that this data set comes from Iowa, but it is unknown how this data may compare to a different state. With the same variables, we can run these same algorithms to see which performs the best.
+
+
+
+
+Below are the screenshots of our Kaggle results.
+
+
+![](C:/Users/jacob/Documents/STT 481/KNN.png)
+![](C:/Users/jacob/Documents/STT 481/LinearReg.png)
+
+![](C:/Users/jacob/Documents/STT 481/SubsetLinearRegression.png)
+
+
+![](C:/Users/jacob/Documents/STT 481/Ridge.png)
+![](C:/Users/jacob/Documents/STT 481/Lasso.png)
+![](C:/Users/jacob/Documents/STT 481/GAM.png)
+
+![](C:/Users/jacob/Documents/STT 481/Tree.png)
+![](C:/Users/jacob/Documents/STT 481/Bagging.png)
+
+![](C:/Users/jacob/Documents/STT 481/RandomForest.png)
+
+![](C:/Users/jacob/Documents/STT 481/Boosting.png)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
